@@ -61,15 +61,34 @@ export function parseExcelBuffer(
     throw new ExcelParseError("فرمت فایل معتبر نیست.");
   }
 
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+  const rawMatrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,
     blankrows: false,
     defval: null,
   });
 
-  if (matrix.length === 0) {
+  if (rawMatrix.length === 0) {
     throw new ExcelParseError("هیچ داده‌ای پیدا نشد.");
   }
+
+  // ✅ محدوده‌ی واقعی ستون‌ها رو از روی هدر پیدا می‌کنیم:
+  // آخرین ستونی که توی ردیف هدر واقعاً مقدار غیرخالی داره.
+  const rawHeaderRow = rawMatrix[0] ?? [];
+  let lastMeaningfulCol = -1;
+  rawHeaderRow.forEach((value, index) => {
+    if (value !== null && value !== undefined && String(value).trim() !== "") {
+      lastMeaningfulCol = index;
+    }
+  });
+
+  // اگه اصلاً هدر معتبری پیدا نشد، یعنی فایل خرابه.
+  if (lastMeaningfulCol === -1) {
+    throw new ExcelParseError("هیچ داده‌ای پیدا نشد.");
+  }
+
+  // ✅ همه‌ی ردیف‌ها رو به همون تعداد ستون واقعی برش می‌زنیم
+  // (ستون‌های خالی/فانتوم رو کاملاً حذف می‌کنیم)
+  const matrix = rawMatrix.map((row) => row.slice(0, lastMeaningfulCol + 1));
 
   const headerRow = matrix[0] ?? [];
   const headers = buildHeaders(headerRow);
@@ -200,4 +219,35 @@ export function isPersianDateValue(value: string): boolean {
 export function isGregorianDateValue(value: string): boolean {
   const normalized = toLatinDigits(value).trim();
   return /^(19|20)\d{2}[\/\-.]\d{1,2}[\/\-.]\d{1,2}$/.test(normalized);
+}
+
+/** ساخت ParsedExcel از matrix خامی که از worker برگشته. */
+export function buildParsedExcelFromMatrix(
+  matrix: unknown[][],
+  meta: { name: string; size: number },
+): ParsedExcel {
+  const headerRow = matrix[0] ?? [];
+  const headers = buildHeaders(headerRow);
+
+  const rows: ExcelRow[] = matrix.slice(1).reduce<ExcelRow[]>((acc, raw) => {
+    const row: ExcelRow = {};
+    let hasValue = false;
+    headers.forEach((header, index) => {
+      const cell = normalizeCell(raw[index]);
+      row[header] = cell;
+      if (cell !== null && String(cell).trim() !== "") hasValue = true;
+    });
+    if (hasValue) acc.push(row);
+    return acc;
+  }, []);
+
+  if (rows.length === 0) {
+    throw new ExcelParseError("هیچ داده‌ای پیدا نشد.");
+  }
+
+  return {
+    headers,
+    rows,
+    meta: { name: meta.name, size: meta.size, rowCount: rows.length },
+  };
 }

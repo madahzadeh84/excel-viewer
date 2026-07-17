@@ -14,7 +14,8 @@ import {
 import { cn } from "@/lib/utils";
 import { parseExcelBuffer, hasValidExtension, ExcelParseError } from "@/lib/excel";
 import type { ParsedExcel, DetectedColumns } from "@/types/excel";
-import { detectColumns } from "@/lib/excel";
+import { detectColumns, buildParsedExcelFromMatrix } from "@/lib/excel";
+
 
 interface UploadAreaProps {
   onDataParsed: (data: ParsedExcel, columns: DetectedColumns) => void;
@@ -24,57 +25,82 @@ export function UploadArea({ onDataParsed }: UploadAreaProps) {
   const [error, setError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const onDrop = useCallback(
-    (acceptedFiles: File[]) => {
-      const file = acceptedFiles[0];
-      if (!file) return;
+const onDrop = useCallback(
+  (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
 
-      setError(null);
-      setIsProcessing(true);
+    setError(null);
+    setIsProcessing(true);
 
-      if (!hasValidExtension(file.name)) {
-        setError("فرمت فایل معتبر نیست.");
+    if (!hasValidExtension(file.name)) {
+      setError("فرمت فایل معتبر نیست.");
+      setIsProcessing(false);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const buffer = event.target?.result;
+      if (!(buffer instanceof ArrayBuffer)) {
+        setError("خواندن فایل با خطا مواجه شد.");
         setIsProcessing(false);
         return;
       }
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
+      const worker = new Worker(
+        new URL("../workers/ExcelParser.worker.ts", import.meta.url),
+      );
+
+      worker.onmessage = (e: MessageEvent) => {
+        const result = e.data;
+        if (!result.ok) {
+          // پیام واقعی رو لاگ کن تا اگه بازم مشکلی بود بشه فهمید دقیقاً چیه
+          if (result.debug) console.error("Excel parse error:", result.debug);
+          setError(result.error);
+          setIsProcessing(false);
+          worker.terminate();
+          return;
+        }
+
         try {
-          const buffer = event.target?.result;
-          if (!(buffer instanceof ArrayBuffer)) {
-            setError("خواندن فایل با خطا مواجه شد.");
-            setIsProcessing(false);
-            return;
-          }
-
-          const parsed = parseExcelBuffer(buffer, {
-            name: file.name,
-            size: file.size,
+          const parsed = buildParsedExcelFromMatrix(result.matrix, {
+            name: result.name,
+            size: result.size,
           });
-
           const columns = detectColumns(parsed);
           onDataParsed(parsed, columns);
         } catch (err) {
-          if (err instanceof ExcelParseError) {
-            setError(err.message);
-          } else {
-            setError("پارس فایل با خطا مواجه شد. لطفاً فایل دیگری امتحان کنید.");
-          }
+          setError(
+            err instanceof ExcelParseError
+              ? err.message
+              : "پارس فایل با خطا مواجه شد.",
+          );
         } finally {
           setIsProcessing(false);
+          worker.terminate();
         }
       };
 
-      reader.onerror = () => {
-        setError("خواندن فایل با خطا مواجه شد.");
+      worker.onerror = (err) => {
+        console.error("Worker error:", err);
+        setError("پارس فایل با خطا مواجه شد. لطفاً فایل دیگری امتحان کنید.");
         setIsProcessing(false);
+        worker.terminate();
       };
 
-      reader.readAsArrayBuffer(file);
-    },
-    [onDataParsed],
-  );
+      worker.postMessage({ buffer, name: file.name, size: file.size });
+    };
+
+    reader.onerror = () => {
+      setError("خواندن فایل با خطا مواجه شد.");
+      setIsProcessing(false);
+    };
+
+    reader.readAsArrayBuffer(file);
+  },
+  [onDataParsed],
+);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,

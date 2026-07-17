@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   useReactTable,
   getCoreRowModel,
@@ -87,9 +87,12 @@ export function DataTable({ data, headers, detectedColumns }: DataTableProps) {
   });
 
   // Keep page size in sync
-  useMemo(() => {
+  useEffect(() => {
     table.setPageSize(pageSize);
   }, [pageSize, table]);
+  useEffect(() => {
+    table.setPageIndex(0)
+  }, [data, table])
 
   const totalPages = table.getPageCount();
   const currentPage = table.getState().pagination.pageIndex;
